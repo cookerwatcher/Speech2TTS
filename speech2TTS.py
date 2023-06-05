@@ -144,10 +144,7 @@ def send_message_to_twitch():
         message_temp = f"PRIVMSG {channel} :{message}\n"
         sock.send(message_temp.encode('utf-8'))
     except Exception as e:        
-        message_var.set("Error chatting... {e}")
-
-auto_do_it = False  # if true, we will auto TTS
-auto_chat = False   # if true, we will auto Twitch chat
+        message_var.set(f"Error chatting... {e}")
 
 # main window
 window = ThemedTk(theme="equilux")
@@ -161,6 +158,14 @@ splash.geometry('300x100')
 splash_label = tk.Label(splash, text="Initializing system, please wait...", bg='#282828', fg='#ffffff')
 splash_label.pack()
 splash.update()
+
+
+auto_do_it = tk.BooleanVar(window)
+auto_do_it.set(False)
+
+auto_chat = tk.BooleanVar(window)
+auto_chat.set(False)
+
 
 # setup the mixer
 pygame.mixer.init()
@@ -215,18 +220,10 @@ volume_level.set(0)
 message_var = tk.StringVar(window)
 message_var.set("Select a microphone and press listen to get started!")
 
-# some common rules for punctuation
 def add_punctuation(text):
-    # Add a full stop at the end of each sentence
-    text = nltk.tokenize.sent_tokenize(text)
-    text = [sentence.strip() + '.' for sentence in text]
-    text = ' '.join(text)
-    
     # CENSORSHIP - PROFANITY FIXER
-    replace_list = {'cont': 'cunt', 'coming': 'cumming', 'come': 'cum',
-                    #'word': 'replacement',
-                   }
-    
+    replace_list = {'cont': 'cunt', 'coming': 'cumming', 'come': 'cum'}
+
     exciting_words = ['amazing', 'incredible',
                       'exciting', 'fantastic', 'astonishing',
                       'fucing', 'fuck', 'cunt', 'cunts', 'cock', 'pussy']
@@ -234,20 +231,37 @@ def add_punctuation(text):
     # replace all words in a replace_list with the alternative 
     for word in replace_list:
         text = re.sub(r'\b' + word + r'\b', replace_list[word], text, flags=re.IGNORECASE)
-        
-    # Add a comma before a 'but' or 'and' that is not at the start of the sentence
+
+    # add a comma before a 'but' or 'and' that is not at the start of the sentence
     text = re.sub(r'(?<!^)(\s+)(but|and)(\s+)',
                   r', \2 ', text, flags=re.IGNORECASE)
 
-    # Add a question mark after a phrase that starts with a question word
-    text = re.sub(r'\b(who|what|where|when|why|how)\b[\w\s]*',
-                  lambda match: match.group(0) + '?', text, flags=re.IGNORECASE)
- 
-    # Add an exclamation mark to a sentence containing specific words
-    for word in exciting_words:        
-        text = re.sub(r'\b[\w\s]*\b' + word + r'\b[\w\s]*\.',
-                      lambda match: match.group(0)[:-1] + '!', text, flags=re.IGNORECASE)        
+    # split into sentences
+    sentences = nltk.tokenize.sent_tokenize(text)
+
+    for i in range(len(sentences)):
+        sentence = sentences[i].strip()
+
+        # If the sentence starts with a question word, replace the trailing full stop (if any) with a question mark
+        if re.match(r'\b(who|what|where|when|why|how)\b', sentence, flags=re.IGNORECASE):
+            sentence = re.sub(r'\.$', '?', sentence)
+
+        # if the sentence contains an 'exciting' word, replace the trailing full stop (if any) with an exclamation mark
+        for word in exciting_words:
+            if re.search(r'\b' + word + r'\b', sentence, flags=re.IGNORECASE):
+                sentence = re.sub(r'\.$', '!', sentence)
+                break  # once we've found one word, no need to check the others
+
+        # if the sentence doesn't end with punctuation, add a full stop
+        if not re.search(r'[.!?]$', sentence):
+            sentence = sentence + '.'
+
+        sentences[i] = sentence
+
+    text = ' '.join(sentences)
+
     return text
+
 
 # to show the microphone volume level
 def update_audio_level():
@@ -312,21 +326,22 @@ def recognize_and_send_audio():
         try:
             text = r.recognize_google(audio, key=GOOGLE_SPEECH_API_KEY)          
         except:
-            message_var.set("Sorry could not recognize what you said")
+            message_var.set("Sorry could not recognize what you said, or an error occured.")
+            return
+    
+        message_var.set("You said : '{}'".format(text))            
+        text = add_punctuation(text)
 
-        finally:
-            message_var.set("You said : '{}'".format(text))            
-            text = add_punctuation(text)
+        # Clear text box and add new text
+        txt_box.delete('1.0', tk.END)
+        txt_box.insert(tk.END, text)
 
-            # Clear text box and add new text
-            txt_box.delete('1.0', tk.END)
-            txt_box.insert(tk.END, text)
+        # Send text to Eleven Labs API and/or Twitch chat
+        if auto_do_it.get() == True and tts_available == True:
+            do_it(text)
 
-            # Send text to Eleven Labs API and/or Twitch chat
-            if auto_do_it == True and tts_available == True:
-                do_it(text)
-            if auto_chat == True and twitch_connected == True:
-                send_message_to_twitch(text)
+        if auto_chat.get() == True and twitch_connected == True:
+            send_message_to_twitch()
 
 # audio device selection drop-down
 mic_choice = tk.StringVar(window)
@@ -401,13 +416,37 @@ volume_bar.grid(row=7, column=0, padx=5, pady=10, columnspan=4)
 # start a new thread for the audio level update to avoid blocking the main thread
 threading.Thread(target=update_audio_level, daemon=True).start()
 
+def receive_from_twitch():
+    while True:
+        try:
+            response = sock.recv(2048).decode('utf-8')
+            if response.startswith('PING'):
+                sock.send("PONG\n".encode('utf-8'))
+            elif 'PRIVMSG' in response:
+                message = re.search(r':.*?!.*\s:(.*)', response).group(1)
+                print(f"Incoming message: {message}")
+        except socket.error:
+            # Connection was likely closed, so we'll break out of the loop
+            break
+        except Exception as e:
+            print(f"Error receiving message from Twitch: {e}")
+
 # connect to twitch
 if twitch_available == True:
-    connect_to_twitch()
+    # start the receiving thread after connecting to Twitch
+    if connect_to_twitch():
+        threading.Thread(target=receive_from_twitch, daemon=True).start()
+
     if twitch_connected == True and twitch_channel != '':
         change_channel(twitch_channel)
 
 window.mainloop()
+
+if twitch_connected == True:
+    try:
+        sock.close()
+    except:
+        pass
 
 # save config at shutdown
 config_save()
