@@ -39,7 +39,7 @@ Replace put_a_valid_key_here with your ElevenLabs API key.
 
 To run the application, simply execute the script in a terminal:
 
-```python main.py```
+```python speech2TTS.py```
 
 * Usage
 
