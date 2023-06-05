@@ -1,0 +1,9 @@
+numpy
+speechrecognition
+ttkthemes
+sounddevice
+pygame
+nltk
+configparser
+elevenlabs
+pyaudio
